@@ -289,7 +289,9 @@ class BaseLift3DSystem(BaseSystem):
             del prev_geometry
             cleanup()
         else:
-            self.geometry = threestudio.find(self.cfg.geometry_type)(self.cfg.geometry)
+            self._geometry_caller = threestudio.find(self.cfg.geometry_type)
+            geometry_temp = self.cfg.geometry
+            self.geometry = self._geometry_caller(geometry_temp)
 
         self.material = threestudio.find(self.cfg.material_type)(self.cfg.material)
         self.background = threestudio.find(self.cfg.background_type)(
