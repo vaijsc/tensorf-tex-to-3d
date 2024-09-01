@@ -97,6 +97,8 @@ def get_activation(name) -> Callable:
         return lambda x: trunc_exp(x - 1.0)
     elif name == "sigmoid":
         return lambda x: torch.sigmoid(x)
+    elif name == "sigmoid-mipnerf":
+        return lambda x: torch.sigmoid(x) * (1 + 2*0.001) - 0.001  # Uses sigmoid clamping from MipNeRF
     elif name == "tanh":
         return lambda x: torch.tanh(x)
     elif name == "shifted_softplus":

@@ -1,4 +1,4 @@
-name: "dreamfusion-sd"
+name: "dreamfusion-sd-triplane"
 tag: "${rmspace:${system.prompt_processor.prompt},_}"
 exp_root_dir: "outputs"
 seed: 0
@@ -47,14 +47,16 @@ system:
         output_coordinate_dim: 3
         resolution: [128, 128, 128]
 
-  material_type: "diffuse-with-point-light-material"
+  material_type: no-material
   material:
-    ambient_only_steps: 2001
-    albedo_activation: sigmoid
+    n_output_dims: 3
+    color_activation: sigmoid-mipnerf # follow OpenLRM
+    requires_normal: true
 
   background_type: "neural-environment-map-background"
   background:
-    color_activation: sigmoid
+    color_activation: sigmoid-mipnerf # follow OpenLRM
+    random_aug: false
 
   renderer_type: "nerf-volume-renderer"
   renderer:
