@@ -120,7 +120,7 @@ class Triplane(BaseImplicitGeometry):
             points.requires_grad_(True)
 
         points_unscaled = points  # points in the original scale
-        points = contract_to_unisphere(
+        points = contract_to_unisphere_triplane(
             points, self.bbox, self.unbounded
         )  # points normalized to (-1, 1)
 
