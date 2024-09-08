@@ -33,6 +33,7 @@ class Triplane(BaseImplicitGeometry):
                 'multiscale_res': [1, 2, 4],
                 'concat_features_across_scales': True,
                 'grid_config': [{
+                'pe_encoding': True,
                 'grid_dimensions': 2,
                 'input_coordinate_dim': 3,
                 'output_coordinate_dim': 32,

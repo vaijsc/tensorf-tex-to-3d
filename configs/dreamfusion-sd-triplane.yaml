@@ -39,13 +39,14 @@ system:
     # coarse to fine hash grid encoding
     # to ensure smooth analytic normals
     pos_encoding_config:
-      multiscale_res: [1, 2, 4]
+      multiscale_res: [1, 2, 4, 8, 16]
       concat_features_across_scales: True 
       grid_config:
+        pe_encoding: True
         grid_dimensions: 2
         input_coordinate_dim: 3
-        output_coordinate_dim: 3
-        resolution: [128, 128, 128]
+        output_coordinate_dim: 32
+        resolution: [32, 32, 32]
 
   material_type: no-material
   material:
