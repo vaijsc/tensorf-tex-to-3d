@@ -7,11 +7,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import tinycudann as tcnn
 import einops
 
 from threestudio.utils.base import Updateable
+from threestudio.utils.config import config_to_primitive
 from threestudio.utils.ops import chunk_batch, scale_tensor
-from threestudio.models.networks import CompositeEncoding
+from threestudio.utils.misc import get_rank
+from threestudio.models.networks import CompositeEncoding, ProgressiveBandHashGrid
 from threestudio.utils.typing import *
 
 def contract_to_unisphere_triplane(
@@ -291,6 +294,70 @@ class KPlane(nn.Module, Updateable):
         return {
             "field": list(field_params.values()),
         }
+    
+
+class KPlaneHashGrid(nn.Module, Updateable):
+    def __init__(self, in_channels: int, config: dict):
+        super().__init__()
+        self.n_input_dims = in_channels
+
+        self.grids = nn.ModuleList()
+        self.feature_dim = 0
+        
+        # Resolution fix: multi-res only on spatial planes
+        # hashcode grid_dimensions
+        self.grid_dimensions = 2
+        for _ in range(in_channels):
+            with torch.cuda.device(get_rank()):
+                gp = self._init_hashgrid_encoding(
+                    grid_nd=self.grid_dimensions,
+                    config=config_to_primitive(config),
+                    dtype=torch.float32,
+                )
+                self.grids.append(gp)
+        self.n_output_dims = self.grids[0].n_output_dims
+        print(f"Initialized model grids: {self.grids}")
+    
+    def forward(self, x):
+        return self._interpolate_ms_feature_hashgrid(
+            x, ms_grids=self.grids,
+            grid_dimensions=self.grid_dimensions,
+        )
+
+    def _init_hashgrid_encoding(self,
+                        grid_nd: int,
+                        config,
+                        dtype=torch.float32,):
+            encoding_config = config.copy()
+            encoding_config["otype"] = "Grid"
+            encoding_config["type"] = "Hash"
+            grid = tcnn.Encoding(grid_nd, encoding_config, dtype=dtype)
+            return grid
+
+    def _interpolate_ms_feature_hashgrid(self, 
+                                pts: Float[Tensor, "... 3"],
+                                ms_grids: Collection[Iterable[nn.Module]],
+                                grid_dimensions: int,
+                                ) -> torch.Tensor:
+            coo_combs = list(itertools.combinations(
+                range(pts.shape[-1]), grid_dimensions)
+            )
+
+            interp_space = 0.
+            for ci, coo_comb in enumerate(coo_combs):
+                # interpolate in hash grid
+                interp_out_plane = ms_grids[ci](pts[..., coo_comb])
+                # compute product over planes
+                interp_space = interp_space + interp_out_plane
+
+            return interp_space
+    
+    
+    # def get_params(self):
+    #     field_params = {k: v for k, v in self.grids.named_parameters(prefix="grids")}
+    #     return {
+    #         "field": list(field_params.values()),
+    #     }
 
 def get_kplane(n_input_dims: int, config) -> nn.Module: 
     encoding = KPlane(n_input_dims, config)
@@ -305,6 +372,16 @@ def get_kplane(n_input_dims: int, config) -> nn.Module:
 
 def get_kplane_interp(n_input_dims: int, config) -> nn.Module:
     encoding = KPlaneInterp(n_input_dims, config)
+    encoding = CompositeEncoding(
+        encoding,
+        include_xyz=config.get("include_xyz", False),
+        xyz_scale=1.0,
+        xyz_offset=0.0
+    ) # hard coded for triplane
+    return encoding
+
+def get_kplane_hashgrid(n_input_dims: int, config) -> nn.Module:
+    encoding = KPlaneHashGrid(n_input_dims, config)
     encoding = CompositeEncoding(
         encoding,
         include_xyz=config.get("include_xyz", False),
