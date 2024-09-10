@@ -17,6 +17,8 @@ from threestudio.utils.misc import get_rank
 from threestudio.models.networks import CompositeEncoding, ProgressiveBandHashGrid
 from threestudio.utils.typing import *
 
+from .hashgrid_encode import HashGridEncodeTorch
+
 def contract_to_unisphere_triplane(
     x: Float[Tensor, "... 3"], bbox: Float[Tensor, "2 3"], unbounded: bool = False
 ) -> Float[Tensor, "... 3"]:
@@ -309,7 +311,7 @@ class KPlaneHashGrid(nn.Module, Updateable):
         self.grid_dimensions = 2
         for _ in range(in_channels):
             with torch.cuda.device(get_rank()):
-                gp = self._init_hashgrid_encoding(
+                gp = self._init_hashgrid_encoding_myself(
                     grid_nd=self.grid_dimensions,
                     config=config_to_primitive(config),
                     dtype=torch.float32,
@@ -333,6 +335,19 @@ class KPlaneHashGrid(nn.Module, Updateable):
             encoding_config["type"] = "Hash"
             grid = tcnn.Encoding(grid_nd, encoding_config, dtype=dtype)
             return grid
+    
+    def _init_hashgrid_encoding_myself(self,
+                        grid_nd: int,
+                        config,
+                        dtype=torch.float32,):
+            encoding_config = config.copy()
+            grid = HashGridEncodeTorch(input_dim=grid_nd,
+                                       log_2_hashmap_size=config["log2_hashmap_size"],
+                                       num_levels=config["n_levels"],
+                                       num_feature_per_level=config["n_features_per_level"],
+                                       start_resolution=config["base_resolution"],
+                                       per_level_scale=config["per_level_scale"],)
+            return grid
 
     def _interpolate_ms_feature_hashgrid(self, 
                                 pts: Float[Tensor, "... 3"],
@@ -343,12 +358,12 @@ class KPlaneHashGrid(nn.Module, Updateable):
                 range(pts.shape[-1]), grid_dimensions)
             )
 
-            interp_space = 0.
+            interp_space = 1.
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in hash grid
                 interp_out_plane = ms_grids[ci](pts[..., coo_comb])
                 # compute product over planes
-                interp_space = interp_space + interp_out_plane
+                interp_space = interp_space * interp_out_plane
 
             return interp_space
     
