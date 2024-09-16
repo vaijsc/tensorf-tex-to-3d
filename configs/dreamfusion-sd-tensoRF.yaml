@@ -1,4 +1,4 @@
-name: "dreamfusion-sd-triplane"
+name: "dreamfusion-sd-tensoRF"
 tag: "${rmspace:${system.prompt_processor.prompt},_}"
 exp_root_dir: "outputs"
 seed: 0
@@ -17,7 +17,7 @@ data:
 
 system_type: "dreamfusion-system"
 system:
-  geometry_type: "triplane"
+  geometry_type: "triplane-tensoRF"
   geometry:
     radius: 2.0
     normal_type: "finite_difference"
@@ -38,15 +38,7 @@ system:
 
     # coarse to fine hash grid encoding
     # to ensure smooth analytic normals
-    pos_encoding_config:
-      multiscale_res: [1, 2, 4, 8, 16]
-      concat_features_across_scales: True 
-      grid_config:
-        pe_encoding: False
-        grid_dimensions: 2
-        input_coordinate_dim: 3
-        output_coordinate_dim: 2
-        resolution: [32, 32, 32]
+
 
   material_type: no-material
   material:
@@ -107,7 +99,8 @@ trainer:
   num_sanity_val_steps: 0
   val_check_interval: 200
   enable_progress_bar: true
-  precision: 16-mixed
+  # precision: 16-mixed
+  precision: 32
 
 checkpoint:
   save_last: true # save at each validation time

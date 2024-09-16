@@ -60,6 +60,68 @@ def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners:
     interp = interp.squeeze()  # [B?, n, feature_dim?]
     return interp
 
+# def grid_sample_one_dim_wrapper(grid: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
+#     assert grid.dim() == 4
+#     _, feature_dim, core_dim, reso = grid.shape
+#     coords = coords.unsqueeze(-1)
+#     grid = einops.rearrange(grid, 'b d c r -> r (b d c)')
+
+#     normalized_points = (((coords + 1)/2) * (reso - 1)) # B, 1
+    
+#     # calculate interpolation
+#     lower_indices = torch.floor(normalized_points).long()
+#     upper_indices = torch.ceil(normalized_points).long()
+
+#     lower_indices = torch.clamp(lower_indices, 0, reso - 1) 
+#     upper_indices = torch.clamp(upper_indices, 0, reso - 1)
+
+#     weights = normalized_points - lower_indices
+
+#     #  perform interpolate
+#     lower_values = grid[lower_indices.flatten()] # B, (b d c)
+#     upper_values = grid[upper_indices.flatten()] # B, (b d c)
+
+#     interpolated = lower_values * (1 - weights) + upper_values * weights
+#     interpolated = einops.rearrange(interpolated, 'r (b d c) -> b d c r', b = 1, d = feature_dim, c = core_dim)
+#     return interpolated.to(grid.dtype)
+
+def grid_sample_one_dim_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners: bool = True) -> torch.Tensor: 
+    # grid: 1, 32, 4, 256
+    # coords: B
+    n_coords = torch.stack((torch.zeros_like(coords), coords), dim=-1)
+
+    _, d_dim, core_dim, reso = grid.shape
+    grid = einops.rearrange(grid, 'b d c r -> b (d c) r')
+    grid = grid.unsqueeze(-1) 
+
+    grid_dim = n_coords.shape[-1]
+
+    if grid.dim() == grid_dim + 1:
+        # no batch dimension present, need to add it
+        grid = grid.unsqueeze(0)
+    if n_coords.dim() == 2:
+        n_coords = n_coords.unsqueeze(0)
+
+    if grid_dim == 2 or grid_dim == 3:
+        grid_sampler = F.grid_sample
+    else:
+        raise NotImplementedError(f"Grid-sample was called with {grid_dim}D data but is only "
+                                  f"implemented for 2 and 3D data.")
+
+    n_coords = n_coords.view([n_coords.shape[0]] + [1] * (grid_dim - 1) + list(n_coords.shape[1:]))
+    B, feature_dim = grid.shape[:2]
+    n = n_coords.shape[-2]
+    interp = grid_sampler(
+        grid,  # [B, feature_dim, reso, ...]
+        n_coords,  # [B, 1, ..., n, grid_dim]
+        align_corners=align_corners,
+        mode='bilinear', padding_mode='border')
+    interp = interp.view(B, feature_dim, n)  # [B, n, feature_dim]
+    interp = einops.rearrange(interp, 'b (d c) n -> (b d) c n', b = 1, c = core_dim)
+    return interp
+
+    
+
 class KPlaneInterp(nn.Module, Updateable):
     def __init__(self, in_channels: int, config: dict):
         super().__init__()
@@ -264,6 +326,7 @@ class KPlane(nn.Module, Updateable):
                         grid_sample_wrapper(grid[ci], pts[..., coo_comb])
                         .view(-1, feature_dim)
                     )
+                    
                     if self.pe_encoding:
                         if ci == 0:
                             encoding = self._pe_encoding(pts[..., 2].unsqueeze(-1))
@@ -374,6 +437,209 @@ class KPlaneHashGrid(nn.Module, Updateable):
     #         "field": list(field_params.values()),
     #     }
 
+
+class Tucker(nn.Module, Updateable):
+    def __init__(self, in_channels: int, config: dict):
+        super().__init__()
+        self.grid_config = config.grid_config
+        self.multiscale_res_multipliers = config.multiscale_res or [1]
+        if config.concat_features_across_scales:
+            self.n_output_dims = self.grid_config.output_coordinate_dim * len(config.multiscale_res)
+        else:
+            self.n_output_dims = self.grid_config.output_coordinate_dim
+        self.n_input_dims = in_channels
+        self.concat_features = config.concat_features_across_scales
+
+        self.grids = nn.ModuleList()
+        self.feature_dim = 0
+        for res in self.multiscale_res_multipliers:
+            # initialize coordinate grid
+            config = self.grid_config.copy()
+            # Resolution fix: multi-res only on spatial planes
+            config["resolution"] = [
+                r * res for r in config["resolution"][:3]
+            ] + config["resolution"][3:]
+            
+            config["core_dim"] = [r * 1 for r in config["core_dim"][:3]
+            ] + config["core_dim"][3:]
+                
+            gp = self._init_tucker_param(
+                grid_nd=config["grid_dimensions"],
+                in_dim=config["input_coordinate_dim"],
+                out_dim=config["output_coordinate_dim"],
+                core_dim=config["core_dim"],
+                reso=config["resolution"],
+            )
+
+            self.grids.append(gp)
+        self.pe_encoding = self.grid_config.get("pe_encoding", False)
+        if self.pe_encoding:
+            self.pe_freqs = self.grid_config["output_coordinate_dim"] // 2
+            self.register_buffer("freq_bands", (2**torch.arange(self.pe_freqs).to(torch.float32)))
+        print(f"Initialized model tucker grids: {self.grids}")
+    
+    def forward(self, x):
+        return self._interpolate_ms_feature_tucker(
+            x, ms_grids=self.grids,
+            grid_dimensions=self.grid_config["grid_dimensions"],
+            concat_features=self.concat_features, num_levels=None 
+        )
+
+    def _init_tucker_param(self,
+                        grid_nd: int,
+                        in_dim: int,
+                        out_dim: int,
+                        core_dim: Sequence[int],
+                        reso,
+                        std: float = 0.1, 
+                        n_components: int = 1):
+            assert in_dim == len(reso), "Resolution must have same number of elements as input-dimension"
+            has_time_planes = in_dim == 4
+            assert grid_nd <= in_dim
+            grid_coefs = nn.ParameterList()
+            core_tensor = nn.Parameter(torch.empty(1, core_dim[0], core_dim[1], core_dim[2]))
+            # nn.init.normal_(core_tensor)
+            nn.init.normal_(core_tensor, std=std)
+            for ci in range(in_dim):
+                new_grid_coef = nn.Parameter(torch.empty(1, out_dim, core_dim[ci], reso[ci]))
+                # nn.init.uniform_(new_grid_coef, a=a, b=b)
+                nn.init.normal_(new_grid_coef, std=std)
+                # nn.init.uniform_(new_grid_coef, a=0.1, b=0.5)
+                grid_coefs.append(new_grid_coef)
+            grid_coefs.append(core_tensor)
+            return grid_coefs
+
+    def _interpolate_ms_feature_tucker(self, 
+                                pts: Float[Tensor, "... 3"],
+                                ms_grids: Collection[Iterable[nn.Module]],
+                                grid_dimensions: int,
+                                concat_features: bool,
+                                num_levels: Optional[int],
+                                ) -> torch.Tensor:
+        coo_combs = list(itertools.combinations(
+            range(pts.shape[-1]), grid_dimensions)
+        )
+        if num_levels is None:
+            num_levels = len(ms_grids)
+        multi_scale_interp = [] if concat_features else 0.
+        grid: nn.ParameterList
+        for scale_id, grid in enumerate(ms_grids[:num_levels]):
+            core_tensor = grid[-1].squeeze(0) # c, c, c
+            interp_out = []
+            for ci in range(3):
+                # interpolate in plane
+                feature_dim = grid[ci].shape[1]  # shape of grid[ci]: 1, out_dim, *reso
+                interp_out_plane = (
+                    grid_sample_one_dim_wrapper(grid[ci], pts[..., ci])
+                    .squeeze(0) # d, c, B
+                )
+                
+                interp_out.append(interp_out_plane)
+            interp_space = 1
+            interp_space = torch.einsum('x y z, d x B-> d B y z', core_tensor, interp_out[0])
+            interp_space = torch.einsum('d B y z, d y B -> d B z', interp_space, interp_out[1])
+            interp_space = torch.einsum('d B z, d z B -> B d', interp_space, interp_out[2]) # B, C
+
+            if concat_features:
+                multi_scale_interp.append(interp_space)
+            else:
+                multi_scale_interp = multi_scale_interp + interp_space
+            
+        if concat_features:
+            multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
+        return multi_scale_interp
+    
+    def get_params(self):
+        field_params = {k: v for k, v in self.grids.named_parameters(prefix="grids")}
+        return {
+            "field": list(field_params.values()),
+        }
+
+class TensorVMSplit(nn.Module, Updateable):
+    def __init__(self, in_channels: int, config: dict):
+        super().__init__()
+        self.config = config
+        self.density_n_comp = self.config.get("density_n_comp", 8)
+        self.app_n_comp = self.config.get("appearance_n_comp", 24)
+        self.app_dim = self.config.get("app_dim", 27)
+        self.density_shift = self.config.get("density_shift", -10)
+
+        self.matMode = [[0,1], [0,2], [1,2]]
+        self.vecMode =  [2, 1, 0]
+        self.comp_w = [1,1,1]
+        self.gridSize = config["resolution"]
+        
+        self.init_svd_volume(self.gridSize[0])
+        self.n_output_dims = self.app_dim
+        self.n_input_dims = in_channels
+        
+    
+    def forward(self, x):
+        return self._interpolate_ms_feature(
+            x, ms_grids=self.grids,
+            grid_dimensions=self.grid_config["grid_dimensions"],
+            concat_features=self.concat_features, num_levels=None 
+        )
+
+    def init_svd_volume(self, res):
+        self.density_plane, self.density_line = self.init_one_svd(self.density_n_comp, self.gridSize, 0.1)
+        self.app_plane, self.app_line = self.init_one_svd(self.app_n_comp, self.gridSize, 0.1)
+        self.basis_mat = torch.nn.Linear(sum(self.app_n_comp), self.app_dim, bias=False)
+
+    
+    def compute_densityfeature(self, xyz_sampled):
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
+        coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
+        coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
+
+        sigma_feature = torch.zeros((xyz_sampled.shape[0],), device=xyz_sampled.device)
+        result = 1
+        for idx_plane in range(len(self.density_plane)):
+            plane_coef_point = F.grid_sample(self.density_plane[idx_plane], coordinate_plane[[idx_plane]],
+                                                align_corners=True).view(-1, *xyz_sampled.shape[:1])
+            line_coef_point = F.grid_sample(self.density_line[idx_plane], coordinate_line[[idx_plane]],
+                                            align_corners=True).view(-1, *xyz_sampled.shape[:1])
+            sigma_feature = sigma_feature + torch.sum(plane_coef_point * line_coef_point, dim=0)
+            # N_comp, B
+        #     result *= plane_coef_point * line_coef_point
+        # sigma_feature = torch.sum(result, dim=0)
+        return sigma_feature
+    
+    def compute_appfeature(self, xyz_sampled):
+                # plane + line basis
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
+        coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
+        coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
+
+        plane_coef_point,line_coef_point = [],[]
+        for idx_plane in range(len(self.app_plane)):
+            plane_coef_point.append(F.grid_sample(self.app_plane[idx_plane], coordinate_plane[[idx_plane]],
+                                                align_corners=True).view(-1, *xyz_sampled.shape[:1]))
+            line_coef_point.append(F.grid_sample(self.app_line[idx_plane], coordinate_line[[idx_plane]],
+                                            align_corners=True).view(-1, *xyz_sampled.shape[:1]))
+        plane_coef_point, line_coef_point = torch.cat(plane_coef_point), torch.cat(line_coef_point)
+
+
+        return self.basis_mat((plane_coef_point * line_coef_point).T)
+
+    def init_one_svd(self, n_component, gridSize, scale):
+        plane_coef, line_coef = [], []
+        for i in range(len(self.vecMode)):
+            vec_id = self.vecMode[i]
+            mat_id_0, mat_id_1 = self.matMode[i]
+            plane_coef.append(torch.nn.Parameter(
+                scale * torch.randn((1, n_component[i], gridSize[mat_id_1], gridSize[mat_id_0]))))  #
+            line_coef.append(
+                torch.nn.Parameter(scale * torch.randn((1, n_component[i], gridSize[vec_id], 1))))
+
+        return torch.nn.ParameterList(plane_coef), torch.nn.ParameterList(line_coef)
+    
+    def get_params(self):
+        field_params = {k: v for k, v in self.grids.named_parameters(prefix="grids")}
+        return {
+            "field": list(field_params.values()),
+        }
+
 def get_kplane(n_input_dims: int, config) -> nn.Module: 
     encoding = KPlane(n_input_dims, config)
     encoding = CompositeEncoding(
@@ -403,4 +669,12 @@ def get_kplane_hashgrid(n_input_dims: int, config) -> nn.Module:
         xyz_scale=1.0,
         xyz_offset=0.0
     ) # hard coded for triplane
+    return encoding
+
+def get_tucker(n_input_dims: int, config) -> nn.Module:
+    encoding = Tucker(n_input_dims, config)
+    return encoding
+
+def get_tensoRF(n_input_dims: int, config) -> nn.Module:
+    encoding = TensorVMSplit(n_input_dims, config)
     return encoding
