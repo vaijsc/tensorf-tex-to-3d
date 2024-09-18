@@ -6,8 +6,8 @@ seed: 0
 data_type: "random-camera-datamodule"
 data:
   batch_size: 1
-  width: 16
-  height: 16
+  width: 64
+  height: 64
   camera_distance_range: [1.5, 2.0]
   fovy_range: [40, 70]
   elevation_range: [-10, 45]
@@ -38,7 +38,12 @@ system:
 
     # coarse to fine hash grid encoding
     # to ensure smooth analytic normals
-
+    pos_encoding_config:
+        resolution: [512, 512, 512]
+        view_pe: 2
+        fea_pe: 2
+        appearance_n_comp: [48, 48, 48]
+        density_n_comp: [16, 16, 16]
 
   material_type: no-material
   material:
@@ -54,7 +59,7 @@ system:
   renderer_type: "nerf-volume-renderer"
   renderer:
     radius: ${system.geometry.radius}
-    num_samples_per_ray: 128
+    num_samples_per_ray: 512
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
   prompt_processor:

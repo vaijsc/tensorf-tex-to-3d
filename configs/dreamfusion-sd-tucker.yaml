@@ -6,8 +6,8 @@ seed: 0
 data_type: "random-camera-datamodule"
 data:
   batch_size: 1
-  width: 16
-  height: 16
+  width: 64
+  height: 64
   camera_distance_range: [1.5, 2.0]
   fovy_range: [40, 70]
   elevation_range: [-10, 45]
@@ -46,7 +46,7 @@ system:
         grid_dimensions: 1
         input_coordinate_dim: 3
         output_coordinate_dim: 16
-        core_dim: [4, 4, 4]
+        core_dim: [8, 8, 8]
         resolution: [128, 128, 128]
 
   material_type: no-material
@@ -63,7 +63,7 @@ system:
   renderer_type: "nerf-volume-renderer"
   renderer:
     radius: ${system.geometry.radius}
-    num_samples_per_ray: 128
+    num_samples_per_ray: 512 
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
   prompt_processor:
