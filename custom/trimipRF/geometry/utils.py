@@ -80,7 +80,8 @@ class MultiTriMipEncoding(nn.Module):
         config,
         include_xyz: bool = False,
     ):
-        super(TriMipEncoding, self).__init__()
+        super().__init__()
+        self.config = config
         self.n_input_dims = in_channels
         self.n_levels = config.n_levels
         self.plane_size = config.plane_size
@@ -97,7 +98,7 @@ class MultiTriMipEncoding(nn.Module):
 
         for res in self.multiscale_res_multipliers:
             # initialize coordinate grid
-            config = self.grid_config.copy()
+            config = self.config.copy()
             # Resolution fix: multi-res only on spatial planes
             config["resolution"] = config["plane_size"] * res
                 
@@ -112,7 +113,7 @@ class MultiTriMipEncoding(nn.Module):
         print(f"Initialized model grids: {self.grids}")
         self.log2_plane_size_lowest = math.log2(self.plane_size)
         self.register_buffer("log_2_plane_size", 
-            torch.tensor([[self.log2_plane_size_lowest + i for i in range(len(config.multiscale_res))]]))
+            torch.tensor([self.log2_plane_size_lowest + i for i in range(len(config.multiscale_res))]))
         
 
     def init_parameters(self) -> None:
@@ -158,9 +159,8 @@ class MultiTriMipEncoding(nn.Module):
             ).contiguous()
         multi_scale_interp = [] if self.concat_features else 0.
         for scale_id, grid in enumerate(self.grids):
-
             enc = nvdiffrast.torch.texture(
-                grid,
+                grid[0],
                 decomposed_x,
                 mip_level_bias=level+self.log_2_plane_size[scale_id].item(),
                 boundary_mode="clamp",

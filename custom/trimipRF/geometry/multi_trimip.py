@@ -15,7 +15,7 @@ from threestudio.models.networks import get_encoding, get_mlp
 from threestudio.utils.ops import get_activation
 from threestudio.utils.typing import *
 
-from .utils import get_trimip
+from .utils import get_multitrimip
 
 
 @threestudio.register("multi-trimip-rf")
@@ -61,7 +61,7 @@ class MultiTriMipRFModel(BaseImplicitGeometry):
 
     def configure(self) -> None:
         super().configure()
-        self.encoding = get_trimip(
+        self.encoding = get_multitrimip(
             self.cfg.n_input_dims, self.cfg.pos_encoding_config
         )
         self.density_network = get_mlp(
