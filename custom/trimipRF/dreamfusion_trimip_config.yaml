@@ -40,8 +40,8 @@ system:
     # coarse to fine hash grid encoding
     # to ensure smooth analytic normals
     pos_encoding_config:
-      n_levels: 8 
-      plane_size: 512
+      n_levels: 4 
+      plane_size: 128
       feature_dim: 16
 
   material_type: no-material

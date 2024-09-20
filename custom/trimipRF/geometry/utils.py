@@ -28,7 +28,7 @@ class TriMipEncoding(nn.Module):
         )
         self.init_parameters()
         self.n_output_dims = self.feature_dim * 3
-        self.log2_plane_size = math.log2(self.plane_size * math.pi)
+        self.log2_plane_size = math.log2(self.plane_size)
 
     def init_parameters(self) -> None:
         # Important for performance

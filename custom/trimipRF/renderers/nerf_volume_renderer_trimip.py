@@ -36,7 +36,7 @@ def compute_radis_and_cos(height, width, fovy, batch_size):
     Compute radius of a pixel in world space
     """
     # focal_length = 0.5 * height / torch.tan(0.5 * fovy)
-    focal_length = 0.5 * 512 / torch.tan(0.5 * fovy)
+    focal_length = 0.5 * height / torch.tan(0.5 * fovy)
     directions_unit_focal = get_ray_directions(height, width, focal=1.0).to(focal_length.device)
     directions: Float[Tensor, "B H W 3"] = directions_unit_focal[
             None, :, :, :
@@ -219,7 +219,7 @@ class NeRFVolumeRendererTriMip(VolumeRenderer):
                         t_positions, radiis, cos
                     )
                     level_vol = torch.log2(
-                        sample_ball_radii * 2 / self.bbox[1,0]
+                        sample_ball_radii / 2 / self.bbox[1,0]
                     )
                     if self.training:
                         sigma = self.geometry.forward_density(positions, level_vol)[..., 0]
@@ -348,7 +348,7 @@ class NeRFVolumeRendererTriMip(VolumeRenderer):
             t_positions, radiis, cos
         )
         level_vol = torch.log2(
-            sample_ball_radii * 2 / self.bbox[1, 0]
+            sample_ball_radii / 2 / self.bbox[1, 0]
         )
 
         if self.training:
