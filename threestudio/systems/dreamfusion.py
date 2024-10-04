@@ -5,6 +5,7 @@ import torch
 import threestudio
 from threestudio.systems.base import BaseLift3DSystem
 from threestudio.utils.ops import binary_cross_entropy, dot
+from threestudio.utils.loss import TVLoss
 from threestudio.utils.typing import *
 
 
@@ -69,6 +70,21 @@ class DreamFusion(BaseLift3DSystem):
         loss_opaque = binary_cross_entropy(opacity_clamped, opacity_clamped)
         self.log("train/loss_opaque", loss_opaque)
         loss += loss_opaque * self.C(self.cfg.loss.lambda_opaque)
+
+        if self.cfg.geometry_type == "triplane-tensoRF":
+            tv_reg = TVLoss()
+            if self.geometry.cfg.tv_loss_density > 0:
+                loss_tv_density = self.geometry.TV_loss_density(tv_reg) 
+                self.log("train/geometry_loss_tv_density", loss_tv_density)
+                loss += loss_tv_density
+            if self.geometry.cfg.tv_loss_app > 0:
+                loss_tv_app = self.geometry.TV_loss_app(tv_reg) 
+                self.log("train/geometry_loss_tv_app", loss_tv_app)
+                loss += loss_tv_app 
+            if self.geometry.cfg.density_L1 > 0:
+                loss_density_L1 = self.geometry.denisty_L1()
+                self.log("train/geometry_loss_density_L1", loss_density_L1)
+                loss += loss_density_L1
 
         # z-variance loss proposed in HiFA: https://hifa-team.github.io/HiFA-site/
         if "z_variance" in out and "lambda_z_variance" in self.cfg.loss:

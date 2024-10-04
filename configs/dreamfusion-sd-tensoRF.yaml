@@ -44,6 +44,8 @@ system:
         fea_pe: 2
         appearance_n_comp: [48, 48, 48]
         density_n_comp: [16, 16, 16]
+    tv_loss_density: 1.0
+    tv_loss_app: 0.1
 
   material_type: no-material
   material:

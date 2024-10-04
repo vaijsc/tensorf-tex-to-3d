@@ -48,6 +48,10 @@ class TriplaneTensoRF(BaseImplicitGeometry):
                 "n_hidden_layers": 1,
             }
         )
+        tv_loss_density: float = 0.0
+        tv_loss_app: float = 0.0
+        density_L1: float = 0.0
+
         normal_type: Optional[
             str
         ] = "finite_difference"  # in ['pred', 'finite_difference', 'finite_difference_laplacian']
@@ -258,6 +262,15 @@ class TriplaneTensoRF(BaseImplicitGeometry):
     ) -> Float[Tensor, "*N 1"]:
         return -(field - threshold)
 
+    def TV_loss_density(self, reg):
+        return self.encoding.TV_loss_density(reg) * self.cfg.tv_loss_density
+    
+    def TV_loss_app(self, reg):
+        return self.encoding.TV_loss_app(reg) * self.cfg.tv_loss_app
+    
+    def density_L1(self):
+        return self.encoding.density_L1() * self.cfg.density_L1
+    
     def export(self, points: Float[Tensor, "*N Di"], **kwargs) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         if self.cfg.n_feature_dims == 0:
