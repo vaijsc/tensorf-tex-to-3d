@@ -182,6 +182,98 @@ class MultiTriMipEncoding(nn.Module):
             multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
         return multi_scale_interp
 
+class MipTensorVMSplit(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        config,
+        include_xyz: bool = False,
+    ):
+        super().__init__()
+        self.config = config
+        self.density_n_comp = self.config.get("density_n_comp", 8)
+        self.app_n_comp = self.config.get("appearance_n_comp", 24)
+        self.app_dim = self.config.get("app_dim", 27)
+        self.density_shift = self.config.get("density_shift", -10)
+
+        self.matMode = [[0,1], [0,2], [1,2]]
+        self.vecMode =  [2, 1, 0]
+        self.comp_w = [1,1,1]
+        self.gridSize = config["resolution"]
+        
+        self.init_svd_volume(self.gridSize[0])
+        self.n_output_dims = self.app_dim
+        self.n_input_dims = in_channels
+        self.log2_plane_size = math.log2(self.gridSize[0])
+        
+
+    def init_svd_volume(self, res):
+        self.density_plane, self.density_line = self.init_one_svd(self.density_n_comp, self.gridSize, 0.1)
+        self.app_plane, self.app_line = self.init_one_svd(self.app_n_comp, self.gridSize, 0.1)
+        self.basis_mat = torch.nn.Linear(sum(self.app_n_comp), self.app_dim, bias=False)
+
+    def _init_grid_param(self,
+                        grid_nd: int,
+                        in_dim: int,
+                        out_dim: int,
+                        reso,
+                        a: float = -1e-2,
+                        b: float = 1e-2,
+                        n_components: int = 1):
+            grid_coefs = nn.ParameterList()
+            new_grid_coef = nn.Parameter(torch.empty(
+                    [n_components * in_dim, reso, reso, out_dim]
+                ))
+            nn.init.uniform_(new_grid_coef, a=a, b=b)
+            grid_coefs.append(new_grid_coef)
+            return grid_coefs
+
+    def forward(self, x, level):
+        # x in [0,1], level in [0,max_level]
+        # x is Nx3, level is Nx1
+        if 0 == x.shape[0]:
+            return torch.zeros([x.shape[0], self.feature_dim * 3]).to(x)
+        decomposed_x = torch.stack(
+            [
+                x[:, None, [1, 2]],
+                x[:, None, [0, 2]],
+                x[:, None, [0, 1]],
+            ],
+            dim=0,
+        )  # 3xNx1x2
+        if 0 == self.n_levels:
+            level = None
+        else:
+            # assert level.shape[0] > 0, [level.shape, x.shape]
+            level = torch.stack([level, level, level], dim=0)
+            level = torch.broadcast_to(
+                level, decomposed_x.shape[:3]
+            ).contiguous()
+        multi_scale_interp = [] if self.concat_features else 0.
+        for scale_id, grid in enumerate(self.grids):
+            enc = nvdiffrast.torch.texture(
+                grid[0],
+                decomposed_x,
+                mip_level_bias=level+self.log_2_plane_size[scale_id].item(),
+                boundary_mode="clamp",
+                max_mip_level=self.n_levels - 1,
+            )  # 3xNx1xC
+            enc = (
+                enc.permute(1, 2, 0, 3)
+                .contiguous()
+                .view(
+                    x.shape[0],
+                    self.feature_dim * 3,
+                )
+            )  # Nx(3C)
+            if self.concat_features:
+                multi_scale_interp.append(enc)
+            else:
+                multi_scale_interp += enc 
+        if self.concat_features:
+            multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
+        return multi_scale_interp
+    
 
 def get_multitrimip(n_input_dims: int, config) -> nn.Module:
     encoding = MultiTriMipEncoding(n_input_dims, config)
