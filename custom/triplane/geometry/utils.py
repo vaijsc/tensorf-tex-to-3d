@@ -657,6 +657,151 @@ class TensorVMSplit(nn.Module, Updateable):
         return {
             "field": list(field_params.values()),
         }
+    
+
+class MS_TensorVMSplit(nn.Module, Updateable):
+    def __init__(self, in_channels: int, config: dict):
+        super().__init__()
+        self.config = config
+        self.density_n_comp = self.config.get("density_n_comp", 8)
+        self.app_n_comp = self.config.get("appearance_n_comp", 24)
+        self.app_dim = self.config.get("app_dim", 27)
+        self.density_shift = self.config.get("density_shift", -10)
+
+        self.matMode = [[0,1], [0,2], [1,2]]
+        self.vecMode =  [2, 1, 0]
+        self.comp_w = [1,1,1]
+        self.gridSize = config["resolution"]
+        self.res_multiplier = config["multiscale_res"]
+        self.concat_features = config["concat_features_across_scales"]
+        
+        self.init_svd_volume(self.res_multiplier)
+        if self.concat_features:
+            self.n_output_dims = self.app_dim * len(self.res_multiplier)
+            self.n_density_output_dims = len(self.res_multiplier)
+        else:
+            self.n_output_dims = self.app_dim
+            self.n_density_output_dims = 1
+        self.n_input_dims = in_channels
+        
+    
+    def forward(self, x):
+        return self._interpolate_ms_feature(
+            x, ms_grids=self.grids,
+            grid_dimensions=self.grid_config["grid_dimensions"],
+            concat_features=self.concat_features, num_levels=None 
+        )
+
+    def init_svd_volume(self, res_multiplier):
+        """
+        This method initializes the SVD volume in self.ms_grids, the res[0] is corresponding to
+        the self.ms_grids[0] (don't need to change compute_densityfeature, ....)
+        """
+        self.ms_grids = nn.ModuleList()
+        for r_mult in res_multiplier:
+            grid = nn.ModuleList()
+            gridSize = [r_mult * x for x in self.gridSize]
+            density_plane, density_line = self.init_one_svd(self.density_n_comp, gridSize, 0.1)
+            grid.append(density_plane)
+            grid.append(density_line)
+            app_plane, app_line = self.init_one_svd(self.app_n_comp, gridSize, 0.1)
+            grid.append(app_plane)
+            grid.append(app_line)
+            basis_mat = torch.nn.Linear(sum(self.app_n_comp), self.app_dim, bias=False)
+            grid.append(basis_mat)
+            self.ms_grids.append(grid)
+
+
+    def compute_densityfeature(self, xyz_sampled):
+        output = [] if self.concat_features else 0.
+        for grid in self.ms_grids:
+            sigma_feature = self._compute_densityfeature(xyz_sampled, grid).unsqueeze(-1)
+            if self.concat_features:
+                output.append(sigma_feature)
+            else:
+                output += sigma_feature
+        return torch.stack(output, dim=-1)
+    
+    def compute_appfeature(self, xyz_sampled):
+        output = [] if self.concat_features else 0.
+        for grid in self.ms_grids:
+            app_feature = self._compute_appfeature(xyz_sampled, grid)
+            if self.concat_features:
+                output.append(app_feature)
+            else:
+                output += app_feature
+        return torch.cat(output, dim=-1)
+
+    
+    def _compute_densityfeature(self, xyz_sampled, grid):
+        density_plane, density_line = grid[0], grid[1]
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
+        coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
+        coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
+
+        sigma_feature = torch.zeros((xyz_sampled.shape[0],), device=xyz_sampled.device)
+        result = 1
+        for idx_plane in range(len(density_plane)):
+            plane_coef_point = F.grid_sample(density_plane[idx_plane], coordinate_plane[[idx_plane]],
+                                                align_corners=True).view(-1, *xyz_sampled.shape[:1])
+            line_coef_point = F.grid_sample(density_line[idx_plane], coordinate_line[[idx_plane]],
+                                            align_corners=True).view(-1, *xyz_sampled.shape[:1])
+            sigma_feature = sigma_feature + torch.sum(plane_coef_point * line_coef_point, dim=0)
+        return sigma_feature
+    
+    def _compute_appfeature(self, xyz_sampled, grid):
+                # plane + line basis
+        app_plane, app_line, basis_mat = grid[2], grid[3], grid[4]
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
+        coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
+        coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
+
+        plane_coef_point,line_coef_point = [],[]
+        for idx_plane in range(len(app_plane)):
+            plane_coef_point.append(F.grid_sample(app_plane[idx_plane], coordinate_plane[[idx_plane]],
+                                                align_corners=True).view(-1, *xyz_sampled.shape[:1]))
+            line_coef_point.append(F.grid_sample(app_line[idx_plane], coordinate_line[[idx_plane]],
+                                            align_corners=True).view(-1, *xyz_sampled.shape[:1]))
+        plane_coef_point, line_coef_point = torch.cat(plane_coef_point), torch.cat(line_coef_point)
+
+
+        return basis_mat((plane_coef_point * line_coef_point).T)
+
+    def init_one_svd(self, n_component, gridSize, scale):
+        plane_coef, line_coef = [], []
+        for i in range(len(self.vecMode)):
+            vec_id = self.vecMode[i]
+            mat_id_0, mat_id_1 = self.matMode[i]
+            plane_coef.append(torch.nn.Parameter(
+                scale * torch.randn((1, n_component[i], gridSize[mat_id_1], gridSize[mat_id_0]))))  #
+            line_coef.append(
+                torch.nn.Parameter(scale * torch.randn((1, n_component[i], gridSize[vec_id], 1))))
+
+        return torch.nn.ParameterList(plane_coef), torch.nn.ParameterList(line_coef)
+    
+    def TV_loss_density(self, reg):
+        total = 0
+        for idx in range(len(self.density_plane)):
+            total = total + reg(self.density_plane[idx]) * 1e-2 #+ reg(self.density_line[idx]) * 1e-3
+        return total
+    
+    def TV_loss_app(self, reg):
+        total = 0
+        for idx in range(len(self.app_plane)):
+            total = total + reg(self.app_plane[idx]) * 1e-2 #+ reg(self.app_line[idx]) * 1e-3
+        return total
+    
+    def density_L1(self):
+        total = 0
+        for idx in range(len(self.density_plane)):
+            total = total + torch.mean(torch.abs(self.density_plane[idx])) + torch.mean(torch.abs(self.density_line[idx]))# + torch.mean(torch.abs(self.app_plane[idx])) + torch.mean(torch.abs(self.density_plane[idx]))
+        return total
+
+    def get_params(self):
+        field_params = {k: v for k, v in self.grids.named_parameters(prefix="grids")}
+        return {
+            "field": list(field_params.values()),
+        }
 
 def get_kplane(n_input_dims: int, config) -> nn.Module: 
     encoding = KPlane(n_input_dims, config)
@@ -695,4 +840,8 @@ def get_tucker(n_input_dims: int, config) -> nn.Module:
 
 def get_tensoRF(n_input_dims: int, config) -> nn.Module:
     encoding = TensorVMSplit(n_input_dims, config)
+    return encoding
+
+def get_ms_tensoRF(n_input_dims: int, config) -> nn.Module:
+    encoding = MS_TensorVMSplit(n_input_dims, config)
     return encoding
