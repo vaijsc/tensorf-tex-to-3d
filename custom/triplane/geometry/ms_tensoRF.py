@@ -39,6 +39,7 @@ class TriplaneMultiscaleTensoRF(BaseImplicitGeometry):
                 'appearance_n_comp': [48, 48, 48],
                 'density_n_comp': [16, 16, 16],
                 'resolution': [128, 128, 128],
+                'depth': 4,
             }
         )
         mlp_network_config: dict = field(
@@ -96,7 +97,12 @@ class TriplaneMultiscaleTensoRF(BaseImplicitGeometry):
     ) -> "TriplaneMultiscaleTensoRF":
         if isinstance(other, TriplaneMultiscaleTensoRF):
             instance = TriplaneMultiscaleTensoRF(cfg, **kwargs)
+            # check if the resolution isn't the same
+            breakpoint()
+            if other.cfg.pos_encoding_config.resolution[0] != instance.cfg.pos_encoding_config.resolution[0]:
+                other.encoding.upsample_volume_grid(instance.cfg.pos_encoding_config.resolution)
             instance.encoding.load_state_dict(other.encoding.state_dict())
+
             instance.density_network.load_state_dict(other.density_network.state_dict())
             if copy_net:
                 if (

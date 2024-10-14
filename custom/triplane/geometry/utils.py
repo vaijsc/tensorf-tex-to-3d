@@ -804,6 +804,47 @@ class MS_TensorVMSplit(nn.Module, Updateable):
         return {
             "field": list(field_params.values()),
         }
+    
+    @torch.no_grad()
+    def up_sampling_VM(self, plane_coef, line_coef, res_target):
+        for i in range(len(self.vecMode)):
+            vec_id = self.vecMode[i]
+            mat_id_0, mat_id_1 = self.matMode[i][:-1]
+            plane_coef[i] = torch.nn.Parameter(
+                einops.rearrange(
+                    F.interpolate(einops.rearrange(plane_coef[i].data, '1 n h w d -> 1 (n d) h w'), 
+                        size=(res_target[mat_id_1], res_target[mat_id_0]), mode='bilinear',
+                        align_corners=True
+                    ), 
+                    '1 (n d) h w -> 1 n h w d', d = self.plane_depth
+                )
+            )
+            line_coef[i] = torch.nn.Parameter(
+                F.interpolate(line_coef[i].data, size=(res_target[vec_id], 1), mode='bilinear', align_corners=True))
+
+        return plane_coef, line_coef
+    
+    @torch.no_grad()
+    def upsample_volume_grid(self, res_target):
+        new_ms_grids = nn.ModuleList()
+        for idx, grid in enumerate(self.ms_grids):
+            new_grid = nn.ModuleList()
+            r_mult = self.res_multiplier[idx]
+            current_res_target = [r_mult * x for x in res_target]
+            density_plane, density_line, app_plane, app_line, basis_mat = grid
+            new_density_plane, new_density_line = self.up_sampling_VM(density_plane, density_line, current_res_target)
+            new_app_plane, new_app_line = self.up_sampling_VM(app_plane, app_line, current_res_target)
+            new_grid.append(new_density_plane)
+            new_grid.append(new_density_line)
+            new_grid.append(new_app_plane)
+            new_grid.append(new_app_line)
+            new_grid.append(basis_mat)
+            new_ms_grids.append(new_grid)
+        breakpoint()
+        self.ms_grids = new_ms_grids
+        print(f"Upsampled volume grid to {res_target}")
+        
+        
 
 def get_kplane(n_input_dims: int, config) -> nn.Module: 
     encoding = KPlane(n_input_dims, config)
