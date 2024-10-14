@@ -563,8 +563,9 @@ class TensorVMSplit(nn.Module, Updateable):
         self.app_n_comp = self.config.get("appearance_n_comp", 24)
         self.app_dim = self.config.get("app_dim", 27)
         self.density_shift = self.config.get("density_shift", -10)
+        self.plane_depth = self.config.get('depth', 1)
 
-        self.matMode = [[0,1], [0,2], [1,2]]
+        self.matMode = [[0,1,2], [0,2,1], [1,2,0]]
         self.vecMode =  [2, 1, 0]
         self.comp_w = [1,1,1]
         self.gridSize = config["resolution"]
@@ -588,7 +589,7 @@ class TensorVMSplit(nn.Module, Updateable):
 
     
     def compute_densityfeature(self, xyz_sampled):
-        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 1, 3)
         coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
         coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
 
@@ -607,7 +608,7 @@ class TensorVMSplit(nn.Module, Updateable):
     
     def compute_appfeature(self, xyz_sampled):
                 # plane + line basis
-        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 1, 3)
         coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
         coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
 
@@ -626,9 +627,9 @@ class TensorVMSplit(nn.Module, Updateable):
         plane_coef, line_coef = [], []
         for i in range(len(self.vecMode)):
             vec_id = self.vecMode[i]
-            mat_id_0, mat_id_1 = self.matMode[i]
+            mat_id_0, mat_id_1 = self.matMode[i][:-1]
             plane_coef.append(torch.nn.Parameter(
-                scale * torch.randn((1, n_component[i], gridSize[mat_id_1], gridSize[mat_id_0]))))  #
+                scale * torch.randn((1, n_component[i], gridSize[mat_id_1], gridSize[mat_id_0], self.plane_depth))))  #
             line_coef.append(
                 torch.nn.Parameter(scale * torch.randn((1, n_component[i], gridSize[vec_id], 1))))
 
@@ -667,8 +668,9 @@ class MS_TensorVMSplit(nn.Module, Updateable):
         self.app_n_comp = self.config.get("appearance_n_comp", 24)
         self.app_dim = self.config.get("app_dim", 27)
         self.density_shift = self.config.get("density_shift", -10)
+        self.plane_depth = self.config.get('depth', 4)
 
-        self.matMode = [[0,1], [0,2], [1,2]]
+        self.matMode = [[0,1,2], [0,2,1], [1,2,0]]
         self.vecMode =  [2, 1, 0]
         self.comp_w = [1,1,1]
         self.gridSize = config["resolution"]
@@ -735,7 +737,7 @@ class MS_TensorVMSplit(nn.Module, Updateable):
     
     def _compute_densityfeature(self, xyz_sampled, grid):
         density_plane, density_line = grid[0], grid[1]
-        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 1, 3)
         coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
         coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
 
@@ -752,7 +754,7 @@ class MS_TensorVMSplit(nn.Module, Updateable):
     def _compute_appfeature(self, xyz_sampled, grid):
                 # plane + line basis
         app_plane, app_line, basis_mat = grid[2], grid[3], grid[4]
-        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 1, 3)
         coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
         coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
 
@@ -771,9 +773,9 @@ class MS_TensorVMSplit(nn.Module, Updateable):
         plane_coef, line_coef = [], []
         for i in range(len(self.vecMode)):
             vec_id = self.vecMode[i]
-            mat_id_0, mat_id_1 = self.matMode[i]
+            mat_id_0, mat_id_1 = self.matMode[i][:-1]
             plane_coef.append(torch.nn.Parameter(
-                scale * torch.randn((1, n_component[i], gridSize[mat_id_1], gridSize[mat_id_0]))))  #
+                scale * torch.randn((1, n_component[i], gridSize[mat_id_1], gridSize[mat_id_0], self.plane_depth))))  #
             line_coef.append(
                 torch.nn.Parameter(scale * torch.randn((1, n_component[i], gridSize[vec_id], 1))))
 

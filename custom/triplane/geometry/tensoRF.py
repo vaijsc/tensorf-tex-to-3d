@@ -37,6 +37,7 @@ class TriplaneTensoRF(BaseImplicitGeometry):
                 'appearance_n_comp': [48, 48, 48],
                 'density_n_comp': [16, 16, 16],
                 'resolution': [128, 128, 128],
+                'depth': 3,
             }
         )
         mlp_network_config: dict = field(
