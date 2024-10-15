@@ -17,7 +17,6 @@ data:
 
 system_type: "dreamfusion-system"
 system:
-  geometry_convert_from: ???
   geometry_type: "triplane-ms-tensoRF"
   geometry:
     radius: 2.0
@@ -45,7 +44,6 @@ system:
         concat_features_across_scales: true
         view_pe: 2
         fea_pe: 2
-        depth: 4
         appearance_n_comp: [48, 48, 48]
         density_n_comp: [16, 16, 16]
     tv_loss_density: 1.0
