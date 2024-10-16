@@ -269,7 +269,13 @@ class StableDiffusionGuidance(BaseObject):
         latents_denoised = (latents_noisy - sigma * noise_pred) / alpha
         image_denoised = self.decode_latents(latents_denoised)
 
-        grad = w * (noise_pred - noise)
+        # change nois_pred and noise to normalize
+        noise_normalize = noise / torch.sqrt(torch.sum(noise**2, dim=1, keepdim=True))
+        noise_pred_normalize = noise_pred / torch.sqrt(
+            torch.sum(noise_pred**2, dim=1, keepdim=True)
+        )
+        # grad = w * (noise_pred - noise)
+        grad = w * (noise_pred_normalize - noise_normalize)
         # image-space SDS proposed in HiFA: https://hifa-team.github.io/HiFA-site/
         if self.cfg.use_img_loss:
             grad_img = w * (image - image_denoised) * alpha / sigma

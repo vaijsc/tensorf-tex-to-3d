@@ -809,7 +809,7 @@ class MS_TensorVMSplit(nn.Module, Updateable):
     def up_sampling_VM(self, plane_coef, line_coef, res_target):
         for i in range(len(self.vecMode)):
             vec_id = self.vecMode[i]
-            mat_id_0, mat_id_1 = self.matMode[i][:-1]
+            mat_id_0, mat_id_1 = self.matMode[i]
             plane_coef[i] = torch.nn.Parameter(
                 einops.rearrange(
                     F.interpolate(einops.rearrange(plane_coef[i].data, '1 n h w -> 1 n h w'), 
