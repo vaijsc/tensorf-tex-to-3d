@@ -563,9 +563,8 @@ class TensorVMSplit(nn.Module, Updateable):
         self.app_n_comp = self.config.get("appearance_n_comp", 24)
         self.app_dim = self.config.get("app_dim", 27)
         self.density_shift = self.config.get("density_shift", -10)
-        self.plane_depth = self.config.get('depth', 1)
 
-        self.matMode = [[0,1,2], [0,2,1], [1,2,0]]
+        self.matMode = [[0,1], [0,2], [1,2]]
         self.vecMode =  [2, 1, 0]
         self.comp_w = [1,1,1]
         self.gridSize = config["resolution"]
@@ -589,7 +588,7 @@ class TensorVMSplit(nn.Module, Updateable):
 
     
     def compute_densityfeature(self, xyz_sampled):
-        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 1, 3)
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
         coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
         coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
 
@@ -608,7 +607,7 @@ class TensorVMSplit(nn.Module, Updateable):
     
     def compute_appfeature(self, xyz_sampled):
                 # plane + line basis
-        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 1, 3)
+        coordinate_plane = torch.stack((xyz_sampled[..., self.matMode[0]], xyz_sampled[..., self.matMode[1]], xyz_sampled[..., self.matMode[2]])).detach().view(3, -1, 1, 2)
         coordinate_line = torch.stack((xyz_sampled[..., self.vecMode[0]], xyz_sampled[..., self.vecMode[1]], xyz_sampled[..., self.vecMode[2]]))
         coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
 
@@ -627,14 +626,19 @@ class TensorVMSplit(nn.Module, Updateable):
         plane_coef, line_coef = [], []
         for i in range(len(self.vecMode)):
             vec_id = self.vecMode[i]
-            mat_id_0, mat_id_1 = self.matMode[i][:-1]
+            mat_id_0, mat_id_1 = self.matMode[i]
             plane_coef.append(torch.nn.Parameter(
-                scale * torch.randn((1, n_component[i], gridSize[mat_id_1], gridSize[mat_id_0], self.plane_depth))))  #
+                scale * torch.randn((1, n_component[i], gridSize[mat_id_1], gridSize[mat_id_0]))))  #
             line_coef.append(
                 torch.nn.Parameter(scale * torch.randn((1, n_component[i], gridSize[vec_id], 1))))
 
         return torch.nn.ParameterList(plane_coef), torch.nn.ParameterList(line_coef)
     
+    def get_params(self):
+        field_params = {k: v for k, v in self.grids.named_parameters(prefix="grids")}
+        return {
+            "field": list(field_params.values()),
+        }
     def TV_loss_density(self, reg):
         total = 0
         for idx in range(len(self.density_plane)):
@@ -653,11 +657,6 @@ class TensorVMSplit(nn.Module, Updateable):
             total = total + torch.mean(torch.abs(self.density_plane[idx])) + torch.mean(torch.abs(self.density_line[idx]))# + torch.mean(torch.abs(self.app_plane[idx])) + torch.mean(torch.abs(self.density_plane[idx]))
         return total
 
-    def get_params(self):
-        field_params = {k: v for k, v in self.grids.named_parameters(prefix="grids")}
-        return {
-            "field": list(field_params.values()),
-        }
     
 
 class MS_TensorVMSplit(nn.Module, Updateable):
@@ -722,7 +721,10 @@ class MS_TensorVMSplit(nn.Module, Updateable):
                 output.append(sigma_feature)
             else:
                 output += sigma_feature
-        return torch.stack(output, dim=-1)
+        if self.concat_features:
+            return torch.cat(output, dim=-1)
+        else:
+            return output
     
     def compute_appfeature(self, xyz_sampled):
         output = [] if self.concat_features else 0.
@@ -732,7 +734,10 @@ class MS_TensorVMSplit(nn.Module, Updateable):
                 output.append(app_feature)
             else:
                 output += app_feature
-        return torch.cat(output, dim=-1)
+        if self.concat_features:
+            return torch.cat(output, dim=-1)
+        else:
+            return output
 
     
     def _compute_densityfeature(self, xyz_sampled, grid):
@@ -783,14 +788,18 @@ class MS_TensorVMSplit(nn.Module, Updateable):
     
     def TV_loss_density(self, reg):
         total = 0
-        for idx in range(len(self.density_plane)):
-            total = total + reg(self.density_plane[idx]) * 1e-2 #+ reg(self.density_line[idx]) * 1e-3
+        for grid in self.ms_grids:
+            density_plane = grid[0]
+            for idx in range(len(density_plane)):
+                total = total + reg(density_plane[idx]) * 1e-2 #+ reg(self.density_line[idx]) * 1e-3
         return total
     
     def TV_loss_app(self, reg):
         total = 0
-        for idx in range(len(self.app_plane)):
-            total = total + reg(self.app_plane[idx]) * 1e-2 #+ reg(self.app_line[idx]) * 1e-3
+        for grid in self.ms_grids:
+            app_plane = grid[2]
+            for idx in range(len(app_plane)):
+                total = total + reg(app_plane[idx]) * 1e-2 #+ reg(self.app_line[idx]) * 1e-3
         return total
     
     def density_L1(self):
@@ -840,7 +849,6 @@ class MS_TensorVMSplit(nn.Module, Updateable):
             new_grid.append(new_app_line)
             new_grid.append(basis_mat)
             new_ms_grids.append(new_grid)
-        breakpoint()
         self.ms_grids = new_ms_grids
         print(f"Upsampled volume grid to {res_target}")
         

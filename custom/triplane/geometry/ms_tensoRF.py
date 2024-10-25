@@ -98,7 +98,6 @@ class TriplaneMultiscaleTensoRF(BaseImplicitGeometry):
         if isinstance(other, TriplaneMultiscaleTensoRF):
             instance = TriplaneMultiscaleTensoRF(cfg, **kwargs)
             # check if the resolution isn't the same
-            breakpoint()
             if other.cfg.pos_encoding_config.resolution[0] != instance.cfg.pos_encoding_config.resolution[0]:
                 other.encoding.upsample_volume_grid(instance.cfg.pos_encoding_config.resolution)
             instance.encoding.load_state_dict(other.encoding.state_dict())

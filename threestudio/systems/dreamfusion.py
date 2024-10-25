@@ -71,7 +71,7 @@ class DreamFusion(BaseLift3DSystem):
         self.log("train/loss_opaque", loss_opaque)
         loss += loss_opaque * self.C(self.cfg.loss.lambda_opaque)
 
-        if self.cfg.geometry_type == "triplane-tensoRF":
+        if self.cfg.geometry_type == "triplane-tensoRF" or self.cfg.geometry_type == "triplane-ms-tensoRF":
             tv_reg = TVLoss()
             if self.geometry.cfg.tv_loss_density > 0:
                 loss_tv_density = self.geometry.TV_loss_density(tv_reg) 
